@@ -1,0 +1,10 @@
+<h1>Users#new</h1>
+
+<%= @user.errors.count %>
+<%= form_for(@user) do |f| %>
+  <%= f.label :username %>
+  <%= f.text_field :username, placeholder: :username %>
+  <%= f.label :password %>
+  <%= f.password_field :password, placeholder: :password %>
+  <%= submit_tag "Create" %>
+<% end %>
