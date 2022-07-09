@@ -4,8 +4,9 @@ class HomeController < ApplicationController
 
   def login
     if params["username"]
-      user = User.find_by(username: "username")
-      @user = user
+      user = User.find_by(username: params[:username])
+      @valid = user.authenticate(params[:password])
+      puts("=== LOGIN @valid = #{@valid}")
     end
   end
 end

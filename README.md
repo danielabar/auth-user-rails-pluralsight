@@ -1,3 +1,17 @@
+<!-- START doctoc generated TOC please keep comment here to allow auto update -->
+<!-- DON'T EDIT THIS SECTION, INSTEAD RE-RUN doctoc TO UPDATE -->
+**Table of Contents**  *generated with [DocToc](https://github.com/thlorenz/doctoc)*
+
+- [Ruby on Rails 6: Authenticating Users in a Rails Application](#ruby-on-rails-6-authenticating-users-in-a-rails-application)
+  - [Understanding Password Storage and Security in Ruby](#understanding-password-storage-and-security-in-ruby)
+    - [Project Overview](#project-overview)
+    - [Implementing User Verification](#implementing-user-verification)
+    - [Implementing User Verification](#implementing-user-verification-1)
+      - [Build Login Page](#build-login-page)
+    - [Password Recovery](#password-recovery)
+
+<!-- END doctoc generated TOC please keep comment here to allow auto update -->
+
 # Ruby on Rails 6: Authenticating Users in a Rails Application
 
 > My notes from Pluralsight [course](https://app.pluralsight.com/library/courses/rails-application-authenticating-users/table-of-contents)
@@ -204,7 +218,7 @@ Add [bcrypt](https://rubygems.org/gems/bcrypt) gem to Gemfile and install it.
 gem 'bcrypt'
 ```
 
-After bcrypt is installed, use `has_secure_password` macro on user model. This tells Rails that the password field should be run through bcrypt before being saved in database in field named `password_digest`:
+After bcrypt is installed, use `has_secure_password` macro on user model. This tells Rails that the password field should be run through bcrypt before being saved in database in field named `password_digest`. See the [docs](https://api.rubyonrails.org/classes/ActiveModel/SecurePassword/ClassMethods.html#method-i-has_secure_password) for this method.
 
 ```ruby
 # news/app/models/user.rb
@@ -533,7 +547,7 @@ parameters: !ruby/hash:ActiveSupport::HashWithIndifferentAccess
 permitted: false
 ```
 
-But after submitting the form (recall since no controller code has been implemented yet, default action is to render the same view, which maintains the instance vars):
+But after submitting the form (recall since no controller code has been implemented yet, default action is to render the same view, which maintains the instance vars). Now we can see the params contain the usename and password from the form fields:
 
 ```
 --- !ruby/object:ActionController::Parameters
@@ -546,10 +560,221 @@ parameters: !ruby/hash:ActiveSupport::HashWithIndifferentAccess
 permitted: false
 ```
 
-Now that we know what params are available, we can implement the login logic in home controller:
+Now that we know what params are available, we can implement the login logic in home controller. This isn't the final version, for now, simply find the user by the username given in params, and set it as an instance variable:
 
 ```ruby
+# news/app/controllers/home_controller.rb
+class HomeController < ApplicationController
+  def index
+  end
 
+  def login
+    if params["username"]
+      user = User.find_by(username: params[:username])
+      @user = user
+    end
+  end
+end
 ```
 
-Left at 5:00 of Implementing User Verification
+Add debug in the login view to output the `@user` instance variable set by controller:
+
+```erb
+<h1>Login</h1>
+<form action="/home/login" method="POST">
+  <%= hidden_field_tag :authenticity_token, form_authenticity_token %>
+  <input type="text" name="username" placeholder="username">
+  <input type="password" name="password" placeholder="password">
+  <button type="submit">Login</button>
+</form>
+
+<h2>Debug params</h2>
+<%= debug(params) %>
+
+<h2>Debug user</h2>
+<%= debug(@user) %>
+```
+
+Then navigate to `http://localhost:3000/home/login` and login:
+
+![login user debug](doc-images/login-user-debug.png "login user debug")
+
+Finally, need to authenticate user. Call `authenticate` method on user instance, passing in the password from params.
+
+```ruby
+class HomeController < ApplicationController
+  def index
+  end
+
+  def login
+    if params["username"]
+      user = User.find_by(username: params[:username])
+      @valid = user.authenticate(params[:password])
+      puts("=== LOGIN @valid = #{@valid}")
+    end
+  end
+end
+```
+
+Note that `authenticate` is a method added by Rails ActiveModel. If the given password is correct, will return a user model instance, otherwise, returns boolean false.
+
+Can find information about a method in rails console `bin/rails c`:
+
+```ruby
+user = User.find_by(username: "test_user")
+
+user.method(:authenticate).inspect
+# => "#<Method: User(id: integer, username: string, password_digest: string, created_at: datetime, updated_at: datetime)(#<ActiveModel::SecurePassword::InstanceMethodsOnActivation:0x00007f7e040f67f0>)#authenticate(authenticate_password)(unencrypted_password) /Users/dbaron/.rbenv/versions/2.7.2/lib/ruby/gems/2.7.0/gems/activemodel-6.1.6/lib/active_model/secure_password.rb:120>"
+
+user.method(:authenticate).owner
+# => #<ActiveModel::SecurePassword::InstanceMethodsOnActivation:0x00007f7e040f67f0>
+```
+
+See Ruby docs for [Method](https://docs.ruby-lang.org/en/2.7.0/Method.html#method-i-inspect).
+
+See Rails source (couldn't find docs) for [authenticate](https://github.com/rails/rails/blob/3872bc0e54d32e8bf3a6299b0bfe173d94b072fc/activemodel/lib/active_model/secure_password.rb#L92). Note that `authenticate` method is an alias for `authenticate_password` given that the model instance has a `password` attribute.
+
+Now go back to home/login view, fill out login form with incorrect password for `test_user` and check Rails server output. Note that valid is false:
+
+```
+Started POST "/home/login" for ::1 at 2022-07-09 07:40:36 -0400
+Processing by HomeController#login as HTML
+  Parameters: {"authenticity_token"=>"[FILTERED]", "username"=>"test_user", "password"=>"[FILTERED]"}
+  User Load (0.1ms)  SELECT "users".* FROM "users" WHERE "users"."username" = ? LIMIT ?  [["username", "test_user"], ["LIMIT", 1]]
+  ↳ app/controllers/home_controller.rb:7:in `login'
+=== LOGIN @valid = false
+  Rendering layout layouts/application.html.erb
+  Rendering home/login.html.erb within layouts/application
+  Rendered home/login.html.erb within layouts/application (Duration: 0.4ms | Allocations: 119)
+[Webpacker] Everything's up-to-date. Nothing to do
+  Rendered layout layouts/application.html.erb (Duration: 15.6ms | Allocations: 3773)
+Completed 200 OK in 367ms (Views: 48.7ms | ActiveRecord: 0.1ms | Allocations: 4746)
+```
+
+Try again with correct password for `test_user`, this time its the user model instance:
+
+```
+Started POST "/home/login" for ::1 at 2022-07-09 07:42:35 -0400
+Processing by HomeController#login as HTML
+  Parameters: {"authenticity_token"=>"[FILTERED]", "username"=>"test_user", "password"=>"[FILTERED]"}
+  User Load (0.1ms)  SELECT "users".* FROM "users" WHERE "users"."username" = ? LIMIT ?  [["username", "test_user"], ["LIMIT", 1]]
+  ↳ app/controllers/home_controller.rb:7:in `login'
+=== LOGIN @valid = #<User:0x00007f7d659c8e18>
+  Rendering layout layouts/application.html.erb
+  Rendering home/login.html.erb within layouts/application
+  Rendered home/login.html.erb within layouts/application (Duration: 0.6ms | Allocations: 119)
+[Webpacker] Everything's up-to-date. Nothing to do
+  Rendered layout layouts/application.html.erb (Duration: 8.3ms | Allocations: 3773)
+Completed 200 OK in 318ms (Views: 8.9ms | ActiveRecord: 0.1ms | Allocations: 4747)
+```
+
+### Password Recovery
+
+Need to setup app to send email. This is controlled by `config.action_mailer.XXX` settings in `news/config/environments/development.rb`. Instructor put in values for a gmail account but didn't explain what this is - probably want to use env vars rather than hard-coded password:
+
+```ruby
+# news/config/environments/development.rb
+config.action_mailer.raise_delivery_errors = true
+config.action_mailer.deliver_method = :smtp
+config.action_mailer.smtp_settings = {
+  address: 'smtp.gmail.com',
+  port: 587,
+  user_name: 'example',
+  password: 'example',
+  authentication: 'plain',
+  enable_starttls_auto: true
+}
+```
+
+Docs on [using gmail with Action Mailer](https://guides.rubyonrails.org/action_mailer_basics.html#action-mailer-configuration-for-gmail), but need to change personal gmail settings to allow it.
+
+Update user table/model to have email and reset token fields:
+
+```
+bin/rails generate migration AddResetsToUser
+```
+
+```ruby
+# news/db/migrate/20220709121116_add_resets_to_user.rb
+class AddResetsToUser < ActiveRecord::Migration[6.1]
+  def change
+    change_table :users do |t|
+      t.string :email
+      t.string :reset
+    end
+  end
+end
+```
+
+`reset` token will be emailed to user to verify person requesting a password reset is the same as person that received the email.
+
+Run migration with `bin/rails db:migrate`.
+
+Use Rails console `bin/rails c` to add email to the test user:
+
+```ruby
+user = User.find_by(username: "test_user")
+user.update(email: "exampleemail@gmail.com")
+```
+
+Generate a password controller to handle `reset` and `forgot` actions. This will also add router entries to expose GET urls for password/reset and password/forgot, and also generate views:
+
+```
+bin/rails generate controller password reset forgot
+```
+
+Output:
+
+```
+create  app/controllers/password_controller.rb
+ route  get 'password/reset'
+        get 'password/forgot'
+invoke  erb
+create    app/views/password
+create    app/views/password/reset.html.erb
+create    app/views/password/forgot.html.erb
+invoke  test_unit
+create    test/controllers/password_controller_test.rb
+invoke  helper
+create    app/helpers/password_helper.rb
+invoke    test_unit
+invoke  assets
+invoke    scss
+create      app/assets/stylesheets/password.scss
+```
+
+Also generate email templates with:
+
+```
+bin/rails generate mailer ResetMailer
+```
+
+Output:
+
+```
+create  app/mailers/reset_mailer.rb
+invoke  erb
+create    app/views/reset_mailer
+invoke  test_unit
+create    test/mailers/reset_mailer_test.rb
+create    test/mailers/previews/reset_mailer_preview.rb
+```
+
+Implement forgot password view. This needs to prompt user for their email. If a user exists with this email address, the controller needs to generate a token for this user and email it to them.
+
+```erb
+<!-- news/app/views/password/forgot.html.erb -->
+<h1>Forgot Password Form</h1>
+
+<form action="/password/forgot" method="POST">
+  <%= hidden_field_tag :authenticity_token, form_authenticity_token %>
+  <input type="text" name="email" placeholder="email">
+  <button type="submit">Submit</button>
+</form>
+```
+
+Try this out by navigating to `http://localhost:3000/password/forgot`:
+
+![forgot password view](doc-images/forgot-password-view.png "forgot password view")
+
+Left at 1:48 of Password Recovery
