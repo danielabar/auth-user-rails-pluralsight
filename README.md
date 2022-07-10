@@ -777,4 +777,236 @@ Try this out by navigating to `http://localhost:3000/password/forgot`:
 
 ![forgot password view](doc-images/forgot-password-view.png "forgot password view")
 
-Left at 1:48 of Password Recovery
+However, in order to submit form, need to add `post` methods to router. Note that both `get` and `post` will be mapped to the same password controller actions. The difference will be that GET won't have any parameters because a form isn't being submitted, whereas POST will have parameters from form submission. We'll be checking for this in the action method:
+
+```ruby
+# news/config/routes.rb
+Rails.application.routes.draw do
+  get 'password/reset'
+  post 'password/reset'
+  get 'password/forgot'
+  post 'password/forgot'
+
+  resources :users
+
+  get 'home/login'
+  post 'home/login'
+
+  get 'home/index'
+  root 'home#index'
+end
+```
+
+Then implement controller `forgot` action. Check if `email` param exists. Best practice would be if email not found, simply render the same page with an error, but for this app, will raise a not found exception. If user is found, generate a token, save it to user's `reset` field, and render the token back in plain text for now (will be replaced by email sending later).
+
+Note use of rendering plain text to browser is explained in [Rails Guide Layout and Rendering](https://guides.rubyonrails.org/layouts_and_rendering.html#rendering-text).
+
+Also useful to read [options for render method](https://guides.rubyonrails.org/layouts_and_rendering.html#options-for-render).
+
+A real implementation would encrypt token before saving in db???
+
+```ruby
+class PasswordController < ApplicationController
+  def reset
+  end
+
+  def forgot
+    if params[:email]
+      user = User.find_by(email: params[:email]) or not_found
+      token = SecureRandom.hex(10)
+      user.reset = token
+      user.save
+
+      render plain: user.reset
+    end
+  end
+
+  def not_found
+    raise ActionController::RoutingError.new('Not Found')
+  end
+end
+```
+
+Try it out: Navigate to `http://localhost:3000/password/forgot`, enter email saved to test_user earlier `exampleemail@gmail.com` and submit form.
+
+![fill in forgot form](doc-images/fill-in-forgot-form.png "fill in forgot form")
+
+Rails server output shows:
+
+```
+Started POST "/password/forgot" for ::1 at 2022-07-10 08:35:35 -0400
+Processing by PasswordController#forgot as HTML
+  Parameters: {"authenticity_token"=>"[FILTERED]", "email"=>"exampleemail@gmail.com"}
+  User Load (0.1ms)  SELECT "users".* FROM "users" WHERE "users"."email" = ? LIMIT ?  [["email", "exampleemail@gmail.com"], ["LIMIT", 1]]
+  ↳ app/controllers/password_controller.rb:7:in `forgot'
+  TRANSACTION (0.1ms)  begin transaction
+  ↳ app/controllers/password_controller.rb:10:in `forgot'
+  User Update (3.8ms)  UPDATE "users" SET "updated_at" = ?, "reset" = ? WHERE "users"."id" = ?  [["updated_at", "2022-07-10 12:35:35.762773"], ["reset", "df549da1538d34ec8e83"], ["id", 1]]
+  ↳ app/controllers/password_controller.rb:10:in `forgot'
+  TRANSACTION (1.0ms)  commit transaction
+  ↳ app/controllers/password_controller.rb:10:in `forgot'
+  Rendering text template
+  Rendered text template (Duration: 0.1ms | Allocations: 26)
+Completed 200 OK in 148ms (Views: 21.8ms | ActiveRecord: 5.2ms | Allocations: 9883)
+```
+
+And browser displays plain text token:
+
+![forgot response](doc-images/forgot-response.png "forgot response")
+
+Now implement `reset` action. Use `query_parameters` to extract token from url such as `http://localhost:3000/password/reset?token=dcd7160251b020d8403b`. Render a "not found" page if token not provided. Then lookup the user who has their `reset` field saved as this token. For now, just render the username back in plain text.
+
+Note that `params` can also be used to access the token from url. See [Rails Guides parameters](https://guides.rubyonrails.org/action_controller_overview.html#path-parameters-query-parameters-and-request-parameters) for explanation:
+
+> Rails collects all of the parameters sent along with the request in the params hash, whether they are sent as part of the query string, or the post body. The request object has three accessors that give you access to these parameters depending on where they came from. The query_parameters hash contains parameters that were sent as part of the query string while the request_parameters hash contains parameters sent as part of the post body. The path_parameters hash contains parameters that were recognized by the routing as being part of the path leading to this particular controller and action.
+
+```ruby
+# news/app/controllers/password_controller.rb
+class PasswordController < ApplicationController
+  def reset
+    # instructor used query_parameters but params works just as well didn't explain why one over the other
+    token = request.query_parameters[:token] or not_found
+    # token = request.params[:token]
+
+    # find the user who has this token saved in their `reset` field:
+    user = User.find_by(reset: token) or not_found
+    render plain: user.username
+  end
+
+  def forgot
+    if params[:email]
+      user = User.find_by(email: params[:email]) or not_found
+      token = SecureRandom.hex(10)
+      user.reset = token
+      user.save
+
+      render plain: user.reset
+    end
+  end
+
+  def not_found
+    raise ActionController::RoutingError.new('Not Found')
+  end
+end
+```
+
+To try this, first use Rails console `bin/rails c` to get the users token that we saved earlier:
+
+```ruby
+user = User.find_by(username: "test_user")
+#   User Load (0.3ms)  SELECT "users".* FROM "users" WHERE "users"."username" = ? LIMIT ?  [["username", "test_user"], ["LIMIT", 1]]
+# => #<User id: 1, username: "test_user", password_digest: [FILTERED], created_at: "2022-07-03 13:44:31.437865000 +0000", updated_at: "2022-07-10 12:35:35.762773000 +0000", email: "ex...
+
+user.reset
+# => "df549da1538d34ec8e83"
+```
+
+Then navigate to the password reset page, passing in this token as a query parameter `http://localhost:3000/password/reset?token=df549da1538d34ec8e83`. Browser will display back in plain text the username: `test_user`.
+
+Now implement the reset password form. Note the hidden field for reset token to ensure users can't spoof reset password requests.
+
+```erb
+<!-- news/app/views/password/reset.html.erb -->
+<h1>Reset Password for <%= @user.username %></h1>
+
+<form action="/password/reset" method="POST">
+  <%= hidden_field_tag :authenticity_token, form_authenticity_token %>
+  <%= hidden_field_tag "token", @user.reset %>
+  <input type="password" name="password" placeholder="New Password">
+  <button type="submit">Submit</button>
+</form>
+```
+
+Now go back and update `reset` method in password controller. So far it's only handling the `get` request. Update it to also check for presence of `password` param, and if present, update the users password and remove the token. Render plain text success message as response.
+
+Note I had to change `or` to `||` for first line otherwise it immediately fails when posting form because `request.query_parameters[:token]` will be nil.
+
+```ruby
+# news/app/controllers/password_controller.rb
+class PasswordController < ApplicationController
+  def reset
+    token = request.query_parameters[:token] || params[:token] || not_found
+    @user = User.find_by(reset: token) or not_found
+    if params[:password]
+      @user.password = params[:password]
+      @user.reset = nil
+      @user.save
+      render plain: "Successfully reset password."
+    end
+  end
+
+  def forgot
+    if params[:email]
+      user = User.find_by(email: params[:email]) or not_found
+      token = SecureRandom.hex(10)
+      user.reset = token
+      user.save
+
+      render plain: user.reset
+    end
+  end
+
+  def not_found
+    raise ActionController::RoutingError.new('Not Found')
+  end
+end
+```
+
+Try it out: Navigate to reset password view passing in token for test_user: `http://localhost:3000/password/reset?token=df549da1538d34ec8e83`:
+
+![reset password form](doc-images/reset-password-form.png "reset password form")
+
+Provide a new password and submit form. Rails server output:
+
+```
+Started POST "/password/reset" for ::1 at 2022-07-10 09:38:39 -0400
+Processing by PasswordController#reset as HTML
+  Parameters: {"authenticity_token"=>"[FILTERED]", "token"=>"[FILTERED]", "password"=>"[FILTERED]"}
+  User Load (0.2ms)  SELECT "users".* FROM "users" WHERE "users"."reset" = ? LIMIT ?  [["reset", "df549da1538d34ec8e83"], ["LIMIT", 1]]
+  ↳ app/controllers/password_controller.rb:6:in `reset'
+  TRANSACTION (0.1ms)  begin transaction
+  ↳ app/controllers/password_controller.rb:12:in `reset'
+  User Update (0.5ms)  UPDATE "users" SET "password_digest" = ?, "updated_at" = ?, "reset" = ? WHERE "users"."id" = ?  [["password_digest", "$2a$12$sLRK9PXXoCXzvKSrmsBem.um0X2nVeq5oxQ328Og7Ni8TSWIaf5pO"], ["updated_at", "2022-07-10 13:38:39.479365"], ["reset", nil], ["id", 1]]
+  ↳ app/controllers/password_controller.rb:12:in `reset'
+  TRANSACTION (1.3ms)  commit transaction
+  ↳ app/controllers/password_controller.rb:12:in `reset'
+  Rendering text template
+  Rendered text template (Duration: 0.1ms | Allocations: 25)
+Completed 200 OK in 306ms (Views: 0.5ms | ActiveRecord: 2.1ms | Allocations: 3018)
+```
+
+Browser response:
+
+![password reset success](doc-images/password-reset-success.png "password reset success")
+
+Update `forgot` action of password controller to *NOT* return the token in plain text response (that was just for demonstration, otherwise any user could reset any other users password). Instead, return a response saying something like "password reset link has been emailed to you".
+
+```ruby
+# news/app/controllers/password_controller.rb
+class PasswordController < ApplicationController
+  def reset
+    token = request.query_parameters[:token] || params[:token] || not_found
+    @user = User.find_by(reset: token) or not_found
+    if params[:password]
+      @user.password = params[:password]
+      @user.reset = nil
+      @user.save
+      render plain: "Successfully reset password."
+    end
+  end
+
+  def forgot
+    if params[:email]
+      user = User.find_by(email: params[:email]) or not_found
+      token = SecureRandom.hex(10)
+      user.reset = token
+      user.save
+      render plain: "A link to reset your password has been sent to that email if it exists. "
+    end
+  end
+
+  def not_found
+    raise ActionController::RoutingError.new('Not Found')
+  end
+end
+```

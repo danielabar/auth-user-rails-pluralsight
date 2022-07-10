@@ -1,2 +1,8 @@
-<h1>Password#reset</h1>
-<p>Find me in app/views/password/reset.html.erb</p>
+<h1>Reset Password for <%= @user.username %></h1>
+
+<form action="/password/reset" method="POST">
+  <%= hidden_field_tag :authenticity_token, form_authenticity_token %>
+  <%= hidden_field_tag "token", @user.reset %>
+  <input type="password" name="password" placeholder="New Password">
+  <button type="submit">Submit</button>
+</form>
