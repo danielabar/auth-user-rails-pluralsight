@@ -1010,3 +1010,7 @@ class PasswordController < ApplicationController
   end
 end
 ```
+
+Finally, we need to actually email the token to user.
+
+Left at 6:06
