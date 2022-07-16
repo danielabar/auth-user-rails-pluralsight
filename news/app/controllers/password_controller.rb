@@ -12,10 +12,16 @@ class PasswordController < ApplicationController
 
   def forgot
     if params[:email]
+      # Update user with a reset token
       user = User.find_by(email: params[:email]) or not_found
       token = SecureRandom.hex(10)
       user.reset = token
       user.save
+
+      # Email token to user
+      ResetMailer.with(user: user, token: token).reset_password.deliver_now
+
+      # A simple response to browser
       render plain: "A link to reset your password has been sent to that email if it exists. "
     end
   end

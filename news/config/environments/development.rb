@@ -33,9 +33,16 @@ Rails.application.configure do
   # Store uploaded files on the local file system (see config/storage.yml for options).
   config.active_storage.service = :local
 
-  # Change default action_mailer, these values won't actually work though
-  config.action_mailer.raise_delivery_errors = true
+  # https://discuss.rubyonrails.org/t/define-host-so-absolute-urls-work-in-development-and-test/75085
+  config.action_mailer.default_url_options = { host: 'localhost:3000' } # for absolute urls in email
+  config.action_mailer.asset_host = "http://localhost:3000" # for image URLs in HTML email
+
+  # for development ignore send errors, just need to see generated email in server output
+  config.action_mailer.raise_delivery_errors = false
   config.action_mailer.perform_caching = false
+
+  # example SMTP but will need SendGrid or some other service to actually work
+  # credentials should be env vars
   config.action_mailer.smtp_settings = {
     address: 'smtp.gmail.com',
     port: 587,

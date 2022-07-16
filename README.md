@@ -9,6 +9,7 @@
     - [Implementing User Verification](#implementing-user-verification-1)
       - [Build Login Page](#build-login-page)
     - [Password Recovery](#password-recovery)
+  - [Keeping Users Signed in with Secure Session Management](#keeping-users-signed-in-with-secure-session-management)
 
 <!-- END doctoc generated TOC please keep comment here to allow auto update -->
 
@@ -670,12 +671,23 @@ Completed 200 OK in 318ms (Views: 8.9ms | ActiveRecord: 0.1ms | Allocations: 474
 
 ### Password Recovery
 
-Need to setup app to send email. This is controlled by `config.action_mailer.XXX` settings in `news/config/environments/development.rb`. Instructor put in values for a gmail account but didn't explain what this is - probably want to use env vars rather than hard-coded password:
+Need to setup app to send email. This is controlled by `config.action_mailer.XXX` settings in `news/config/environments/development.rb`. Instructor put in values for a gmail account but didn't explain what this is - probably want to use env vars rather than hard-coded password.
+
+Also need to set host url so that can generate absolute urls in email (will do this later).
 
 ```ruby
 # news/config/environments/development.rb
-config.action_mailer.raise_delivery_errors = true
-config.action_mailer.deliver_method = :smtp
+
+# https://discuss.rubyonrails.org/t/define-host-so-absolute-urls-work-in-development-and-test/75085
+config.action_mailer.default_url_options = { host: 'localhost:3000' } # for absolute urls in email
+config.action_mailer.asset_host = "http://localhost:3000" # for image URLs in HTML email
+
+# for development ignore send errors, just need to see generated email in server output
+config.action_mailer.raise_delivery_errors = false
+config.action_mailer.perform_caching = false
+
+# example SMTP but will need SendGrid or some other service to actually work
+# credentials should be env vars
 config.action_mailer.smtp_settings = {
   address: 'smtp.gmail.com',
   port: 587,
@@ -686,7 +698,9 @@ config.action_mailer.smtp_settings = {
 }
 ```
 
-Docs on [using gmail with Action Mailer](https://guides.rubyonrails.org/action_mailer_basics.html#action-mailer-configuration-for-gmail), but need to change personal gmail settings to allow it.
+Docs on [using gmail with Action Mailer](https://guides.rubyonrails.org/action_mailer_basics.html#action-mailer-configuration-for-gmail), but need to change personal gmail settings to allow it and need to setup app password which is no longer recommended for security?
+
+Maybe try free tier of [SendGrid](https://signup.sendgrid.com/) and [configure it](https://docs.sendgrid.com/for-developers/sending-email/rubyonrails).
 
 Update user table/model to have email and reset token fields:
 
@@ -1013,4 +1027,192 @@ end
 
 Finally, we need to actually email the token to user.
 
-Left at 6:06
+Define data to be included in email in `ResetMailer`. We need the user's email address, and need to construct the reset password url, which consists of the route and token parameter:
+
+```ruby
+# news/app/mailers/reset_mailer.rb
+class ResetMailer < ApplicationMailer
+  def reset_password
+    @user = params[:user]
+    @url = "#{password_reset_url}?token=#{params[:token]}"
+    mail(to: @user.email, subject: 'Reset Password for News App')
+  end
+end
+```
+
+Next define the email template, which will have access to the instance variables set in `ResetMailer`. Can use the same templating syntax as in any Rails view:
+
+```erb
+<!-- news/app/views/reset_mailer/reset_password.html.erb -->
+<h1>Reset your password for News App</h1>
+<p>
+  Hi <%= @user.username %>, your password has been requested to be reset.
+  Reset it by clicking <a href="<%= @url %>">here</a>.
+</p>
+```
+
+To send the email, update `forgot` method of `PasswordController` to invoke `ResetMailer`:
+
+```ruby
+# news/app/controllers/password_controller.rb
+class PasswordController < ApplicationController
+  def reset
+    token = request.query_parameters[:token] || params[:token] || not_found
+    @user = User.find_by(reset: token) or not_found
+    if params[:password]
+      @user.password = params[:password]
+      @user.reset = nil
+      @user.save
+      render plain: "Successfully reset password."
+    end
+  end
+
+  def forgot
+    if params[:email]
+      # Update user with a reset token
+      user = User.find_by(email: params[:email]) or not_found
+      token = SecureRandom.hex(10)
+      user.reset = token
+      user.save
+
+      # Email token to user
+      ResetMailer.with(user: user, token: token).reset_password.deliver_now
+
+      # A simple response to browser
+      render plain: "A link to reset your password has been sent to that email if it exists. "
+    end
+  end
+
+  def not_found
+    raise ActionController::RoutingError.new('Not Found')
+  end
+end
+```
+
+Rails API for [ActionMailer::Base](https://api.rubyonrails.org/classes/ActionMailer/Base.html).
+
+Let's try it out, navigate to `http://localhost:3000/password/forgot` and fill in email field with our example user created earlier `exampleemail@gmail.com`:
+
+![filled in forgot password form](doc-images/filled-in-forgot-password-form.png "filled in forgot password form")
+
+Clicking Submit will run the `forgot` method in `PasswordController`. Email sending will fail because of invalid smtp credentials configured earlier, but Rails server output will show the generated html email:
+
+```
+Started POST "/password/forgot" for ::1 at 2022-07-16 08:36:45 -0400
+Processing by PasswordController#forgot as HTML
+  Parameters: {"authenticity_token"=>"[FILTERED]", "email"=>"exampleemail@gmail.com"}
+  User Load (6.0ms)  SELECT "users".* FROM "users" WHERE "users"."email" = ? LIMIT ?  [["email", "exampleemail@gmail.com"], ["LIMIT", 1]]
+  ↳ app/controllers/password_controller.rb:16:in `forgot'
+  TRANSACTION (0.1ms)  begin transaction
+  ↳ app/controllers/password_controller.rb:19:in `forgot'
+  User Update (1.8ms)  UPDATE "users" SET "updated_at" = ?, "reset" = ? WHERE "users"."id" = ?  [["updated_at", "2022-07-16 12:36:46.030071"], ["reset", "83f0fba53b4a01ddb806"], ["id", 1]]
+  ↳ app/controllers/password_controller.rb:19:in `forgot'
+  TRANSACTION (1.8ms)  commit transaction
+  ↳ app/controllers/password_controller.rb:19:in `forgot'
+  Rendering layout layouts/mailer.html.erb
+  Rendering reset_mailer/reset_password.html.erb within layouts/mailer
+  Rendered reset_mailer/reset_password.html.erb within layouts/mailer (Duration: 1.2ms | Allocations: 149)
+  Rendered layout layouts/mailer.html.erb (Duration: 2.2ms | Allocations: 319)
+ResetMailer#reset_password: processed outbound mail in 12.5ms
+Delivered mail 62d2b0de1d381_4e3a39946385c@some-machine.local.mail (348.0ms)
+Date: Sat, 16 Jul 2022 08:36:46 -0400
+From: from@example.com
+To: exampleemail@gmail.com
+Message-ID: <62d2b0de1d381_4e3a39946385c@some-machine.local.mail>
+Subject: Reset Password for News App
+Mime-Version: 1.0
+Content-Type: text/html;
+ charset=UTF-8
+Content-Transfer-Encoding: 7bit
+
+<!DOCTYPE html>
+<html>
+  <head>
+    <meta http-equiv="Content-Type" content="text/html; charset=utf-8" />
+    <style>
+      /* Email styles need to be inline */
+    </style>
+  </head>
+
+  <body>
+    <h1>Reset your password for News App</h1>
+<p>
+  Hi test_user, your password has been requested to be reset.
+  Reset it by clicking <a href="http://localhost:3000/password/reset?token=83f0fba53b4a01ddb806">here</a>.
+</p>
+  </body>
+</html>
+
+  Rendering text template
+  Rendered text template (Duration: 0.1ms | Allocations: 25)
+Completed 200 OK in 536ms (Views: 2.9ms | ActiveRecord: 10.6ms | Allocations: 24722)
+```
+
+Try the reset link by copying it from Rails server output and paste it in browser url `http://localhost:3000/password/reset?token=83f0fba53b4a01ddb806`:
+
+![reset password form with token](doc-images/reset-password-form-with-token-url.png "reset password form with token")
+
+## Keeping Users Signed in with Secure Session Management
+
+Need to make app "remember" the user login between pages.
+
+**Session:** Secure storage on backend of webapp to keep track of each user's information.
+
+Need to correlate each session on website to a user in the database.
+
+Firstly, make `username` and `email` fields on `User` model unique. Not strictly required for sessions but is good practice:
+
+```ruby
+# news/app/models/user.rb
+class User < ApplicationRecord
+  has_secure_password
+  validates :username, :email, uniqueness: true
+end
+```
+
+Now use Rails built-in feature to setup sessions.
+
+Any code added to `ApplicationController` will be inherited by all other controllers. When app was initially scaffolded, it's an empty class:
+
+```ruby
+# news/app/controllers/application_controller.rb
+class ApplicationController < ActionController::Base
+end
+```
+
+Since all other controllers inherit from it, this is the best place to implement authentication and session management:
+
+```ruby
+class ApplicationController < ActionController::Base
+  protect_from_forgery with: :exception
+
+  before_action :authorized
+  helper_method :current_user
+  helper_method :logged_in?
+
+  # Access current user from session at any time
+  def current_user
+    User.find_by(id: session[:user_id])
+  end
+
+  # Determine if user is logged in
+  def logged_in?
+    !current_user.nil?
+  end
+
+  # Force an unauthenticated user to login
+  def authorized
+    redirect_to '/home/login' unless logged_in?
+  end
+end
+```
+
+Rails API for controller [helper_method](https://api.rubyonrails.org/classes/AbstractController/Helpers/ClassMethods.html#method-i-helper_method):
+
+> Declare a controller method as a helper. For example, the following makes the current_user and logged_in? controller methods available to the view.
+
+Rails API for controller [before_action](https://api.rubyonrails.org/classes/AbstractController/Callbacks/ClassMethods.html#method-i-before_action):
+
+> Append a callback before actions. See _insert_callbacks for parameter details. If the callback renders or redirects, the action will not run. If there are additional callbacks scheduled to run after that callback, they are also cancelled.
+
+Left at 1:42
