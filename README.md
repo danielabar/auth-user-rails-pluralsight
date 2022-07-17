@@ -10,6 +10,7 @@
       - [Build Login Page](#build-login-page)
     - [Password Recovery](#password-recovery)
   - [Keeping Users Signed in with Secure Session Management](#keeping-users-signed-in-with-secure-session-management)
+    - [Encrypted Cookies](#encrypted-cookies)
 
 <!-- END doctoc generated TOC please keep comment here to allow auto update -->
 
@@ -1215,4 +1216,275 @@ Rails API for controller [before_action](https://api.rubyonrails.org/classes/Abs
 
 > Append a callback before actions. See _insert_callbacks for parameter details. If the callback renders or redirects, the action will not run. If there are additional callbacks scheduled to run after that callback, they are also cancelled.
 
-Left at 1:42
+`current_user` methods finds user in database for `user_id` stored in session. If no such user can be found, assume user has logged out.
+
+Update HomeController `login` method to save the logged in user_id in the session, if the user's password was valid:
+
+```ruby
+# news/app/controllers/home_controller.rb
+class HomeController < ApplicationController
+  def index
+  end
+
+  def login
+    if params["username"]
+      user = User.find_by(username: params[:username])
+      @valid = user.authenticate(params[:password])
+      if @valid
+        session[:user_id] = user.id
+      end
+    end
+  end
+end
+```
+
+Try to view homepage at `http://localhost:3000`, but there's an error due to infinite redirect loop:
+
+![redirect loop](doc-images/redirect-loop.png "redirect loop")
+
+Issue is Application controller is redirecting to `/home/login` if user not logged in, BUT its in a `before_action` callback which will run for *every* controller including the HomeController, so that also redirects, creating infinite loop.
+
+To fix this, need to specify an exception for HomeController to skip the `before_action` callback that's specified in the ApplicationController:
+
+```ruby
+# news/app/controllers/home_controller.rb
+class HomeController < ApplicationController
+  skip_before_action :authorized
+
+  def index
+  end
+
+  def login
+    if params["username"]
+      user = User.find_by(username: params[:username])
+      @valid = user.authenticate(params[:password])
+      if @valid
+        session[:user_id] = user.id
+      end
+    end
+  end
+end
+```
+
+Try to view login page now `http://localhost:3000/home/login`, this time should display login form, and `http://localhost:3000` should display homepage with list of news articles. This is because both `login` and `index` are part of HomeController, which is no longer executing `authorized` method from ApplicationController due to exception: `skip_before_action :authorized`.
+
+Create a test user in console:
+
+```ruby
+u = User.create!(username: "test1", email: "test1@test.com", password: "abc123")
+```
+
+Fill in login form with valid values, submit. Check browser dev tools -> Application. Will show cookie `_news_session`.
+
+Right now the UI is responding with `/home/login` view because we haven't defined any other behaviour, we can debug view the session id here:
+
+```erb
+<!-- news/app/views/home/login.html.erb -->
+<h1>Login</h1>
+<form action="/home/login" method="POST">
+  <%= hidden_field_tag :authenticity_token, form_authenticity_token %>
+  <input type="text" name="username" placeholder="username">
+  <input type="password" name="password" placeholder="password">
+  <button type="submit">Login</button>
+</form>
+
+<%= debug(session[:user_id]) %>
+```
+
+After successful login:
+
+![login debug session id](doc-images/login-debug-session-userid.png "login debug session id")
+
+Define `logout` method in HomeController - simple implementation, remove `user_id` from `session`:
+
+```ruby
+# news/app/controllers/home_controller.rb
+class HomeController < ApplicationController
+  # ...
+  def logout
+    session[:user_id] = nil
+  end
+end
+```
+
+Create corresponding logout view that simply displays a success message:
+
+```erb
+<!-- news/app/views/home/logout.html.erb -->
+<h1>Successfully logged out!</h1>
+```
+
+Ad route for logout:
+
+```ruby
+Rails.application.routes.draw do
+  # ...
+  get 'home/logout'
+  # ...
+end
+```
+
+Try this out by navigating to `http://localhost:3000/home/logout`:
+
+![logout view](doc-images/logout-view.png "logout view")
+
+But to confirm user is really logged out, we should update some views to show the logged in user information, then if its no longer displayed, user can know they're really logged out.
+
+First thing to do is make sure HomeController `index` method will indeed enforce authentication, so only logged in users can view the news listing. Use `only` parameter of `skip_before_action` method to specify only `login` and `logout` methods will bypass auth:
+
+```ruby
+# news/app/controllers/home_controller.rb
+class HomeController < ApplicationController
+  skip_before_action :authorized, only: [:login, :logout]
+
+  def index
+  end
+
+  def login
+    if params["username"]
+      user = User.find_by(username: params[:username])
+      @valid = user.authenticate(params[:password])
+      if @valid
+        puts("=== authentication successful for #{user.username}, populating session with #{user.id}")
+        session[:user_id] = user.id
+      else
+        puts("=== authentication failed for #{user.username}")
+      end
+    end
+  end
+
+  def logout
+    session[:user_id] = nil
+  end
+end
+```
+
+Now try to access homepage at `http://localhost:3000` and it redirects to login page `http://localhost:3000/home/login` because we've just logged out.
+
+Then submit a successful login and try to view homepage again, this time news cards are displayed.
+
+Next feature: Let everyone view article listing, BUT only display article details if user is logged in. To do this, add `index` method to list of exceptions in `skip_before_action` of HomeController:
+
+```ruby
+# news/app/controllers/home_controller.rb
+class HomeController < ApplicationController
+  skip_before_action :authorized, only: [:login, :logout, :index]
+  # ...
+end
+```
+
+Then modify home view that lists all the articles. Add a condition in the expression that displays article `description` to use the `logged_in?` helper method defined in ApplicationController. Notice had to add parens `(...)` around positive result of ternary, otherwise get template syntax error:
+
+```erb
+<div class="articles">
+  <h1>Articles</h1>
+  <% articles('Google').items.each do |item| %>
+    <div class="article">
+      <h2><%= item.title %></h2>
+      <p><%= logged_in? ? (raw item.description) : "You must be logged in to view this." %></p>
+      <p><%= item.pubDate %></p>
+    </div>
+  <% end %>
+</div>
+```
+
+Logout by visiting `http://localhost:3000/home/logout`, and then visit homepage at `http://localhost:3000`, now the cards look like this:
+
+![cards logged out](doc-images/cards-logged-out.png "cards logged out")
+
+Notice in Rails server output, multiple queries to users table - because `logged_in?` helper methods invokes `current_user` method in ApplicationController, which runs a query against User model. So its one query per article. Instructor did not address this - performance issue?
+
+```
+Started GET "/" for ::1 at 2022-07-17 08:28:28 -0400
+Processing by HomeController#index as HTML
+  Rendering layout layouts/application.html.erb
+  Rendering home/index.html.erb within layouts/application
+  User Load (0.1ms)  SELECT "users".* FROM "users" WHERE "users"."id" IS NULL LIMIT ?  [["LIMIT", 1]]
+  ↳ app/controllers/application_controller.rb:10:in `current_user'
+  CACHE User Load (0.0ms)  SELECT "users".* FROM "users" WHERE "users"."id" IS NULL LIMIT ?  [["LIMIT", 1]]
+  ↳ app/controllers/application_controller.rb:10:in `current_user'
+  CACHE User Load (0.0ms)  SELECT "users".* FROM "users" WHERE "users"."id" IS NULL LIMIT ?  [["LIMIT", 1]]
+  ↳ app/controllers/application_controller.rb:10:in `current_user'
+  CACHE User Load (0.0ms)  SELECT "users".* FROM "users" WHERE "users"."id" IS NULL LIMIT ?  [["LIMIT", 1]]
+  ↳ app/controllers/application_controller.rb:10:in `current_user'
+  ...
+```
+
+Add `Login` link to home viw:
+
+```erb
+<!-- news/app/views/home/index.html.erb -->
+<div class="articles">
+  <h1>Articles</h1>
+
+  <h2><a href="/home/login">Login</a></h2>
+
+  <div class="articles">
+    <% articles('Google').items.each do |item| %>
+      <div class="article">
+        <h2><%= item.title %></h2>
+        <p><%= logged_in? ? (raw item.description) : "You must be logged in to view this." %></p>
+        <p><%= item.pubDate %></p>
+      </div>
+    <% end %>
+  </div>
+</div>
+```
+
+Add if/else conditional to home view to display Logout link instead of Login if user already logged in:
+
+```erb
+<div class="articles">
+  <h1>Articles</h1>
+
+  <h2>
+    <% if logged_in? %>
+      <a href="/home/logout">Logout</a>
+    <% else %>
+      <a href="/home/login">Login</a>
+    <% end %>
+  </h2>
+
+  <div class="articles">
+    <% articles('Google').items.each do |item| %>
+      <div class="article">
+        <h2><%= item.title %></h2>
+        <p><%= logged_in? ? (raw item.description) : "You must be logged in to view this." %></p>
+        <p><%= item.pubDate %></p>
+      </div>
+    <% end %>
+  </div>
+</div>
+```
+
+Update `login` method in home controller to redirect to homepage after a successful login:
+
+```ruby
+# news/app/controllers/home_controller.rb
+class HomeController < ApplicationController
+  skip_before_action :authorized, only: [:login, :logout, :index]
+
+  def index
+  end
+
+  def login
+    if params["username"]
+      user = User.find_by(username: params[:username])
+      @valid = user.authenticate(params[:password])
+      if @valid
+        puts("=== authentication successful for #{user.username}, populating session with #{user.id}")
+        session[:user_id] = user.id
+        redirect_to '/'
+      else
+        puts("=== authentication failed for #{user.username}")
+      end
+    end
+  end
+
+  def logout
+    session[:user_id] = nil
+  end
+end
+```
+
+### Encrypted Cookies

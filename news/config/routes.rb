@@ -8,6 +8,7 @@ Rails.application.routes.draw do
 
   get 'home/login'
   post 'home/login'
+  get 'home/logout'
 
   get 'home/index'
   root 'home#index'
