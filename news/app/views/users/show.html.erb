@@ -1,3 +1,7 @@
 <h1>Show</h1>
+
+<p><%= flash.alert %></p>
+
 <p><%= @user.username %></p>
+<p><%= @user.email %></p>
 <p>Created <%= time_ago_in_words(@user.created_at) %> ago.</p>

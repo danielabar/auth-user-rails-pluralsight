@@ -1,4 +1,7 @@
 <h1>Login</h1>
+
+<p><%= flash.alert %></p>
+
 <form action="/home/login" method="POST">
   <%= hidden_field_tag :authenticity_token, form_authenticity_token %>
   <input type="text" name="username" placeholder="username">

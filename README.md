@@ -11,6 +11,13 @@
     - [Password Recovery](#password-recovery)
   - [Keeping Users Signed in with Secure Session Management](#keeping-users-signed-in-with-secure-session-management)
     - [Encrypted Cookies](#encrypted-cookies)
+      - [Memory](#memory)
+      - [Database](#database)
+      - [Cookie](#cookie)
+    - [Authenticity Tokens](#authenticity-tokens)
+  - [Validating with Flash Storage](#validating-with-flash-storage)
+    - [Flash Storage and Error Messages](#flash-storage-and-error-messages)
+    - [Automated Error Messages](#automated-error-messages)
 
 <!-- END doctoc generated TOC please keep comment here to allow auto update -->
 
@@ -1488,3 +1495,352 @@ end
 ```
 
 ### Encrypted Cookies
+
+[Rails Guides on Session](https://guides.rubyonrails.org/action_controller_overview.html#session)
+
+How does Rails store the session data?
+
+Three ways to store this data:
+1. Memory
+2. Database
+3. Encrypted cookies (course will focus on this)
+
+#### Memory
+
+Storage in memory is ok for small/prototype apps. In this case, user's cookie simply contains an identifier to correlate to the data stored in memory on the Rails server. eg:
+
+- User with ID of `1` logs in.
+- Rails would create a new key in `Sessions` object such as `123`
+- Rails would store the `user_id` of `1` in sessions key `123` on login: `Sessions[123][user_id] = 1`
+- User's cookie would contain the value `123`, then when sent to server, Rails will pull from `Sessions[cookie_value][user_id]` to determine who is the logged in user.
+
+**Pros**
+- simple setup
+- easy to use
+- no need to store any information on the client
+
+**Cons**
+- Doesn't scale - the more users, the more memory will be required to store all those sessions
+- Doesn't support load balancing - if subsequent requests end up being fulfilled by different servers than the one that originally handled the login, those other servers won't have the same session key in memory.
+- Persistence - if app goes down or has to be restarted, all sessions are lost, so user that was logged in will no longer be.
+
+#### Database
+
+This works the same way as memory, except Sessions stored in database rather than in memory.
+
+**Pros**
+- No need to store info on client
+- Session data persists between app restarts
+- Supports load balancing - session data in db can be used across all app instances
+
+**Cons**
+- Harder to setup
+- Needs additional migrations on db, or use object storage within file system
+
+#### Cookie
+
+This is the Rails default method for session storage. Optimal for most use cases. Session data is not stored on server, rather, it's stored within each browser/client.
+
+Will discuss security later: Session might store data you don't want user to see, or a malicious site could scrape the user's cookies.
+
+**Pros**
+- No need to store any session info on server
+- Extremely persistent - even if server and database fail
+- Supports load balancing and good performance - no matter how many app instances there are, session data will always be consistent because the user's browser is sending the cookie which contains it.
+
+**Cons**
+- Clients have to store their own session data
+
+**Storing session data securely on clients device**
+
+The cookie data is encrypted with a hash and salt, similar to how passwords are saved in database. When session is saved to user, it's encrypted using applications key. So only someone with access to server's key can decrypt session data.
+
+**Demo**
+
+Demo [code](news/decode-rails6.rb) to verify and decode a Rails session cookie. Instructor's code did not work for Rails 6, used this [blog post](https://binarysolo.chapter24.blog/demystifying-cookies-in-rails-6/) instead.
+
+Example decrypted logged in cookie:
+
+```ruby
+{"session_id"=>"6a0eb63ebc79b573a88388907e0031f3", "_csrf_token"=>"zZfEUV7uY6UUHEZr4AqQbyaNJ_U63GqJR_uM3HhOF70=", "user_id"=>1}
+```
+
+Example decrypted logged out cookie:
+```ruby
+{"session_id"=>"6a0eb63ebc79b573a88388907e0031f3", "_csrf_token"=>"zZfEUV7uY6UUHEZr4AqQbyaNJ_U63GqJR_uM3HhOF70="}
+```
+
+`session_id` used to keep track of session. `_csrf_token` used for secure form submission.
+
+### Authenticity Tokens
+
+Every form rendered in browser has a hidden field named `authenticity_token`. Eg - forgot password form at `http://localhost:3000/password/forgot`:
+
+![authenticity token](doc-images/authenticity-token.png "authenticity token")
+
+This is populated by `form_authenticity_token` in the forgot password view template:
+
+```erb
+<!-- news/app/views/password/forgot.html.erb -->
+<form action="/password/forgot" method="POST">
+  <%= hidden_field_tag :authenticity_token, form_authenticity_token %>
+  <input type="text" name="email" placeholder="email">
+  <button type="submit">Submit</button>
+</form>
+```
+
+If comment out the auth token and try to submit form, will get `ActionController::InvalidAuthenticityToken` error.
+
+This is a **CSRF Token:** Cross-site-request-forgery
+
+Protect from CSRF attack where malicious code on an external site could trigger code on your site, eg: changing user's password. This is possible if malicious code can get access to secure session cookie, then it could submit form on user's behalf, pretending to be that user.
+
+**Defend against CSRF Attack:**
+
+1. Use CORS (cross origin resource sharing) - block scripts from external sites (eg: script on evil.com trying to post to myapp.com would get blocked). But not all browsers will enforce the same domain rules?
+2. Same-Site cookies - blocks external sites from using your app's cookies. So would not allow evil.com to use any cookies that were generated by myapp.com. In this case, request would be allowed, but session cookie would not be sent so the request would appear as if from an unauthenticated user. But this depends on browser behavior to do this.
+3. CSRF Token - generated on server rendered template. So user must first visit our app's page to get this token generated, and prevents external sources from triggering actions because they didn't visit our page.
+
+Last option is most reliable because doesn't depend on web browser to enforce it.
+
+The CSRF token submitted by form is correlated with session token to verify that it's really the original user that received this token that is submitting the form.
+
+## Validating with Flash Storage
+
+### Flash Storage and Error Messages
+
+Use flash to give user feedback if login fails. Used for alerts and messages.
+
+**Flash Storage:** Rails built-in feature to allow variables to be carried forward to next action, such as a redirect. After redirect is followed, flash variable persists in session on new page. After variable is displayed in view, it disappears from session.
+
+Trying to use ordinary view instance variables will NOT work because a redirect issues a new request. For example, the `@alert` instance var in this case will not be displayed in login view on failed auth:
+
+```ruby
+class HomeController < ApplicationController
+  skip_before_action :authorized, only: [:login, :logout, :index]
+
+  def index
+    p params
+  end
+
+  def login
+    if params["username"]
+      user = User.find_by(username: params[:username])
+      @valid = user && user.authenticate(params[:password])
+      if @valid
+        session[:user_id] = user.id
+        redirect_to '/'
+      else
+        # will NOT be displayed because redirect_to will cause browser to follow the Location header
+        # and issue a NEW request
+        @alert = "username or password incorrect!"
+        redirect_to '/home/login'
+      end
+    end
+  end
+
+  def logout
+    session[:user_id] = nil
+  end
+end
+```
+
+```erb
+<!-- news/app/views/home/login.html.erb -->
+<h1>Login</h1>
+
+<!-- Will NOT be displayed -->
+<p><%= @alert %></p>
+
+<form action="/home/login" method="POST">
+  <%= hidden_field_tag :authenticity_token, form_authenticity_token %>
+  <input type="text" name="username" placeholder="username">
+  <input type="password" name="password" placeholder="password">
+  <button type="submit">Login</button>
+</form>
+```
+
+Due to use of redirect, need to use flash storage instead of instance variables:
+
+```ruby
+# news/app/controllers/home_controller.rb
+class HomeController < ApplicationController
+  def login
+    if params["username"]
+      user = User.find_by(username: params[:username])
+      @valid = user && user.authenticate(params[:password])
+      if @valid
+        session[:user_id] = user.id
+        redirect_to '/'
+      else
+        flash.alert = "username or password incorrect!"
+        redirect_to '/home/login'
+      end
+    end
+  end
+end
+```
+
+Display `flash.alert` in view:
+
+```erb
+<!-- news/app/views/home/login.html.erb -->
+<h1>Login</h1>
+
+<p><%= flash.alert %></p>
+
+<form action="/home/login" method="POST">
+  <%= hidden_field_tag :authenticity_token, form_authenticity_token %>
+  <input type="text" name="username" placeholder="username">
+  <input type="password" name="password" placeholder="password">
+  <button type="submit">Login</button>
+</form>
+
+<%= debug(session[:user_id]) %>
+```
+
+Try it by navigating to `http://localhost:3000/home/login` and submitting invalid username/password:
+
+![flash alert](doc-images/flash-alert.png "flash alert")
+
+Update user show view to also display user's email:
+
+```erb
+<!-- news/app/views/users/show.html.erb -->
+<h1>Show</h1>
+<p><%= @user.username %></p>
+<p><%= @user.email %></p>
+<p>Created <%= time_ago_in_words(@user.created_at) %> ago.</p>
+```
+
+Try it by visiting `http://localhost:3000/users/1`:
+
+![show user email](doc-images/show-user-email.png "show user email")
+
+Recall when a new user is created successfully, it redirects to the show user page with a flash message:
+
+```ruby
+# news/app/controllers/users_controller.rb
+class UsersController < ApplicationController
+  def create
+    @user = User.new(user_params)
+    if @user.save
+      # flash used here to generate success message
+      redirect_to @user, alert: "User created successfully."
+    else
+      redirect_to new_user_path, alert: "Error creating user."
+    end
+  end
+end
+```
+
+Update user show view to display the success alert:
+
+```erb
+<!-- news/app/views/users/show.html.erb -->
+<h1>Show</h1>
+
+<p><%= flash.alert %></p>
+
+<p><%= @user.username %></p>
+<p><%= @user.email %></p>
+<p>Created <%= time_ago_in_words(@user.created_at) %> ago.</p>
+```
+
+Since this message is only set from creating a new user (test2/test2), navigate to `http://localhost:3000/users/new`, fill out form to create a new user and submit:
+
+![user created flash](doc-images/user-created-flash.png "user created flash")
+
+Add email field to new user registration form:
+
+```erb
+<!-- news/app/views/users/new.html.erb -->
+<h1>Users#new</h1>
+
+<%= form_for(@user) do |f| %>
+  <%= f.label :username %>
+  <%= f.text_field :username, placeholder: :username %>
+  <%= f.label :email %>
+  <%= f.text_field :email, placeholder: :email %>
+  <%= f.label :password %>
+  <%= f.password_field :password, placeholder: :password %>
+  <%= submit_tag "Create" %>
+<% end %>
+```
+
+Now navigating to `http://localhost:3000/users/new`:
+
+![new user email](doc-images/new-user-email.png "new user email")
+
+Let's check what user info is in db so far, from Rails console `bin/rails c`:
+
+```ruby
+User.all.each{ |u| puts("#{u.username}, #{u.email}") }
+#   User Load (0.2ms)  SELECT "users".* FROM "users"
+# test_user, exampleemail@gmail.com
+# test1, test1@test.com
+# test2,
+```
+
+Try to register a new user with an email that's already taken `exampleemail@gmail.com` (use test3/test3):
+
+![user new email taken](doc-images/user-new-email-taken.png "user new email taken")
+
+For instructor, it allowed new user to be created with existing email. For me failed...
+
+First, have to add email to permit_params in users controller:
+
+```ruby
+# news/app/controllers/users_controller.rb
+class UsersController < ApplicationController
+  def create
+    @user = User.new(user_params)
+    if @user.save
+      redirect_to @user, alert: "User created successfully."
+    else
+      p @user.errors.count
+      # should have used render to ensure instance var still populated?
+      redirect_to new_user_path, alert: "Error creating user."
+    end
+  end
+
+  def user_params
+    params.require(:user).permit(:username, :email, :password, :salt, :encrypted_password)
+  end
+end
+```
+
+Then I had a uniqueness validator on users model, so transaction gets rolled back when trying to create a new user with existing email, but no flash message displayed yet:
+
+```ruby
+# news/app/models/user.rb
+class User < ApplicationRecord
+  has_secure_password
+  validates :username, :email, uniqueness: true
+end
+```
+
+Update new users view to display flash alert:
+
+```erb
+<!-- news/app/views/users/new.html.erb -->
+<h1>Users#new</h1>
+
+<p><%= flash.alert %>
+
+<%= form_for(@user) do |f| %>
+  <%= f.label :username %>
+  <%= f.text_field :username, placeholder: :username %>
+  <%= f.label :email %>
+  <%= f.text_field :email, placeholder: :email %>
+  <%= f.label :password %>
+  <%= f.password_field :password, placeholder: :password %>
+  <%= submit_tag "Create" %>
+<% end %>
+```
+
+Now user will see error message if try to use taken email, but its not very useful because doesn't tell user what's wrong:
+
+![users new error](doc-images/users-new-error.png "users new error")
+
+### Automated Error Messages
