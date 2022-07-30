@@ -1844,3 +1844,149 @@ Now user will see error message if try to use taken email, but its not very usef
 ![users new error](doc-images/users-new-error.png "users new error")
 
 ### Automated Error Messages
+
+Errors that occur when trying to create/save an ActiveRecord object are saved in an array attribute of that object: `@obj.errors.full_messages`.
+
+Update users controller to include these messages in flash alert when user creation fails:
+
+```ruby
+# news/app/controllers/users_controller.rb
+class UsersController < ApplicationController
+  def create
+    @user = User.new(user_params)
+    if @user.save
+      redirect_to @user, alert: "User created successfully."
+    else
+      redirect_to new_user_path, alert: "Error creating user: #{@user.errors.full_messages.join("<br />")}"
+    end
+  end
+
+  def user_params
+    params.require(:user).permit(:username, :email, :password, :salt, :encrypted_password)
+  end
+end
+```
+
+Then again try to register new user at `http://localhost:3000/users/new` with email that's already taken: `exampleemail@gmail.com` and username that's already taken: `test_user` and click Create.
+
+![user create flash error](doc-images/user-create-flash-error.png "user create flash error")
+
+Notice that the html `<br />` element that we populated in flash message is not rendering as html in view, its rendered as literal text. One way to fix this is to use `raw` parameter in partial tag, but not recommended.
+
+A better solution for displaying messages is to send entire array of error messages to flash in controller:
+
+```ruby
+# news/app/controllers/users_controller.rb
+class UsersController < ApplicationController
+  def create
+    @user = User.new(user_params)
+    if @user.save
+      redirect_to @user, alert: "User created successfully."
+    else
+      redirect_to new_user_path, alert: @user.errors.full_messages
+    end
+  end
+
+  def user_params
+    params.require(:user).permit(:username, :email, :password, :salt, :encrypted_password)
+  end
+end
+```
+
+Then modify the new user view to iterate these messages and display them, but only if the flash.alert list is populated, otherwise will get a view error trying to invoke `.each` method on nil object:
+
+```erb
+<!-- news/app/views/users/new.html.erb -->
+<h1>Users#new</h1>
+
+<% flash.alert.present? && flash.alert.each do |error| %>
+  <div class="error"><%= error %></div>
+<% end %>
+
+<%= form_for(@user) do |f| %>
+  <%= f.label :username %>
+  <%= f.text_field :username, placeholder: :username %>
+  <%= f.label :email %>
+  <%= f.text_field :email, placeholder: :email %>
+  <%= f.label :password %>
+  <%= f.password_field :password, placeholder: :password %>
+  <%= submit_tag "Create" %>
+<% end %>
+```
+
+Then again try to register new user at `http://localhost:3000/users/new` with email that's already taken: `exampleemail@gmail.com` and username that's already taken: `test_user` and leave password blank, and click Create:
+
+![user create all errors](doc-images/user-create-all-errors.png "user create all errors")
+
+Optionally, add some styles for the `error` css class in the users stylesheet:
+
+```scss
+/* news/app/assets/stylesheets/users.scss */
+.error {
+  background-color: rgb(207, 40, 40);
+  color: #fff;
+  border-radius: 5px;
+  padding: 5px;
+  margin: 5px;
+}
+```
+
+![user errors styled](doc-images/user-errors-styled.png "user errors styled")
+
+Furthermore, make the alert styling re-usable for both error and success messages, by having an `.alert` style, with nesting for `.error` and `.success`:
+
+```scss
+.alert {
+  color: #fff;
+  border-radius: 5px;
+  padding: 5px;
+  margin: 5px;
+  font-weight: bold;
+
+  &.error {
+    background-color: rgb(207, 40, 40);
+  }
+  &.success {
+    background-color: rgb(53, 170, 23);
+  }
+}
+```
+
+Modify the error display in new users view to include the `alert` css class in addition to `error`:
+
+```erb
+<!-- news/app/views/users/new.html.erb -->
+<h1>Users#new</h1>
+
+<% flash.alert.present? && flash.alert.each do |error| %>
+  <div class="alert error"><%= error %></div>
+<% end %>
+
+<%= form_for(@user) do |f| %>
+  <%= f.label :username %>
+  <%= f.text_field :username, placeholder: :username %>
+  <%= f.label :email %>
+  <%= f.text_field :email, placeholder: :email %>
+  <%= f.label :password %>
+  <%= f.password_field :password, placeholder: :password %>
+  <%= submit_tag "Create" %>
+<% end %>
+```
+
+And update the users show view (where user taken to after creation) to show styled success message:
+
+```erb
+<!-- news/app/views/users/show.html.erb -->
+<h1>Show</h1>
+
+<div class="alert success"><%= flash.alert %></div>
+
+<p><%= @user.username %></p>
+<p><%= @user.email %></p>
+<p>Created <%= time_ago_in_words(@user.created_at) %> ago.</p>
+```
+
+Then create a valid user, here is what success message looks like:
+
+![user success styled](doc-images/user-success-styled.png "user success styled")
+

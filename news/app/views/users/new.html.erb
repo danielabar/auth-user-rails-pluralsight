@@ -1,6 +1,8 @@
 <h1>Users#new</h1>
 
-<p><%= flash.alert %>
+<% flash.alert.present? && flash.alert.each do |error| %>
+  <div class="alert error"><%= error %></div>
+<% end %>
 
 <%= form_for(@user) do |f| %>
   <%= f.label :username %>

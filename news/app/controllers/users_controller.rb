@@ -18,7 +18,7 @@ class UsersController < ApplicationController
     else
       p @user.errors.count
       # should have used render to ensure instance var still populated?
-      redirect_to new_user_path, alert: "Error creating user."
+      redirect_to new_user_path, alert: @user.errors.full_messages
     end
   end
 
